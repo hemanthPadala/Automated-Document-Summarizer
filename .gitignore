@@ -1,0 +1,16 @@
+venv/
+__pycache__/
+*.pyc
+.claude/
+data/processed/
+data/raw/
+models/
+logs/
+.streamlit/
+
+# Resume-derived test artifacts contain personal contact info; keep locally
+# for testing but never commit.
+data/resume_test.pdf
+data/resume_text.txt
+evaluation/benchmark_results.json
+evaluation/benchmark_distilbart.json

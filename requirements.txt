@@ -1,0 +1,17 @@
+# Automated Document Summarizer — dependencies
+#
+# Torch install note:
+# This environment is CPU-only. If you have an NVIDIA GPU + CUDA 11.8, install
+# torch separately first with:
+#   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+# then comment out the torch line below (or just let pip skip it if satisfied).
+
+torch
+transformers>=4.40
+datasets
+rouge-score
+accelerate
+sentencepiece
+pymupdf
+streamlit
+nltk
