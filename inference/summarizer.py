@@ -13,11 +13,45 @@ Public API:
     summarize_pdf(pdf_path, model, tokenizer, length="medium") -> str
 """
 
+import logging
 import os
+import time
 
 import fitz  # PyMuPDF
 import torch
 from transformers import AutoTokenizer, BartForConditionalGeneration
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("%(asctime)s.%(msecs)03d %(message)s", datefmt="%H:%M:%S"))
+    logger.addHandler(_handler)
+    logger.propagate = False
+
+
+class Stage:
+    """Context manager that logs a timestamp and elapsed time for a pipeline stage.
+
+    Usage:
+        with Stage("Chunking"):
+            chunks = chunk_text(...)
+
+    Elapsed seconds remain available afterwards via `.elapsed`.
+    """
+
+    def __init__(self, label: str):
+        self.label = label
+        self.elapsed: float | None = None
+
+    def __enter__(self):
+        self._start = time.perf_counter()
+        return self
+
+    def __exit__(self, *exc_info):
+        self.elapsed = time.perf_counter() - self._start
+        logger.info("%s: %.2fs", self.label, self.elapsed)
+
 
 # facebook/bart-large-cnn is BART-large already fine-tuned on CNN/DailyMail,
 # so it works out of the box. If a further fine-tuned checkpoint exists at
@@ -176,41 +210,49 @@ def summarize_pdf(
     device = device or get_device()
     final_preset = LENGTH_PRESETS.get(length, LENGTH_PRESETS["medium"])
 
-    text = extract_text(pdf_path)
-    if not text.strip():
-        return ""
+    with Stage("TOTAL summarize_pdf"):
+        with Stage("Text extraction"):
+            text = extract_text(pdf_path)
+        if not text.strip():
+            return ""
 
-    chunks = chunk_text(text, tokenizer, max_tokens=CHUNK_MAX_TOKENS, overlap=CHUNK_OVERLAP)
+        with Stage("Chunking"):
+            chunks = chunk_text(text, tokenizer, max_tokens=CHUNK_MAX_TOKENS, overlap=CHUNK_OVERLAP)
+        logger.info("Chunking: produced %d chunk(s)", len(chunks))
 
-    if len(chunks) == 1:
-        # Single chunk: generate directly at the requested output length.
-        return summarize_chunks(
-            chunks, model, tokenizer, device=device, num_beams=num_beams, **final_preset
-        )[0]
+        if len(chunks) == 1:
+            # Single chunk: generate directly at the requested output length.
+            with Stage("Summarization (single chunk)"):
+                return summarize_chunks(
+                    chunks, model, tokenizer, device=device, num_beams=num_beams, **final_preset
+                )[0]
 
-    summaries = summarize_chunks(
-        chunks, model, tokenizer, device=device, num_beams=num_beams, **CHUNK_GEN_PARAMS
-    )
+        with Stage(f"Summarization (initial pass, {len(chunks)} chunk(s))"):
+            summaries = summarize_chunks(
+                chunks, model, tokenizer, device=device, num_beams=num_beams, **CHUNK_GEN_PARAMS
+            )
 
-    # Hierarchical reduction: repeatedly combine + re-summarize until one
-    # summary remains. Intermediate rounds stay compact (CHUNK_GEN_PARAMS) so
-    # they keep fitting the encoder; the last round applies the requested
-    # output length.
-    while len(summaries) > 1:
-        groups = _group_by_token_budget(summaries, tokenizer, max_tokens=CHUNK_MAX_TOKENS)
-        is_final_round = len(groups) == 1
-        gen_params = final_preset if is_final_round else CHUNK_GEN_PARAMS
-        combined_texts = [" ".join(group) for group in groups]
-        summaries = summarize_chunks(
-            combined_texts, model, tokenizer, device=device, num_beams=num_beams, **gen_params
-        )
+        # Hierarchical reduction: repeatedly combine + re-summarize until one
+        # summary remains. Intermediate rounds stay compact (CHUNK_GEN_PARAMS) so
+        # they keep fitting the encoder; the last round applies the requested
+        # output length.
+        round_num = 1
+        while len(summaries) > 1:
+            groups = _group_by_token_budget(summaries, tokenizer, max_tokens=CHUNK_MAX_TOKENS)
+            is_final_round = len(groups) == 1
+            gen_params = final_preset if is_final_round else CHUNK_GEN_PARAMS
+            combined_texts = [" ".join(group) for group in groups]
+            with Stage(f"Reduction round {round_num} ({len(groups)} group(s))"):
+                summaries = summarize_chunks(
+                    combined_texts, model, tokenizer, device=device, num_beams=num_beams, **gen_params
+                )
+            round_num += 1
 
-    return summaries[0]
+        return summaries[0]
 
 
 if __name__ == "__main__":
     import sys
-    import time
 
     if len(sys.argv) < 2:
         print("Usage: python -m inference.summarizer <pdf_path> [short|medium|long]")

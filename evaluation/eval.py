@@ -18,13 +18,12 @@ import argparse
 import json
 import os
 import sys
-import time
 
 import torch
 from rouge_score import rouge_scorer
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from inference.summarizer import get_device, load_model  # noqa: E402
+from inference.summarizer import Stage, get_device, load_model  # noqa: E402
 
 TARGETS = {"rouge1": 0.42, "rouge2": 0.20, "rougeL": 0.44}
 
@@ -91,21 +90,20 @@ def main():
     device = get_device()
     print(f"Device: {device}")
 
-    print("Loading model...")
-    model, tokenizer = load_model(args.model_path)
+    with Stage("Load model"):
+        model, tokenizer = load_model(args.model_path)
 
-    print(f"Loading {args.num_samples} test samples...")
-    samples = load_test_samples(args.num_samples, args.processed_dir)
+    with Stage(f"Load {args.num_samples} test samples"):
+        samples = load_test_samples(args.num_samples, args.processed_dir)
     articles = samples["article"]
     references = samples["highlights"]
 
-    print("Generating summaries...")
-    t0 = time.time()
-    predictions = generate_summaries(model, tokenizer, articles, device, args.batch_size, args.num_beams)
-    elapsed = time.time() - t0
+    with Stage("Generate summaries (inference)") as gen_stage:
+        predictions = generate_summaries(model, tokenizer, articles, device, args.batch_size, args.num_beams)
+    elapsed = gen_stage.elapsed
 
-    print("Computing ROUGE...")
-    scores = compute_rouge(predictions, references)
+    with Stage("Compute ROUGE (evaluation)"):
+        scores = compute_rouge(predictions, references)
 
     results = {
         "model_path": args.model_path or "auto",
